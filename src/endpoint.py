@@ -5,7 +5,7 @@ Must be run from Sagemaker Studio or a Sagemaker Notebook.
 import os
 
 import boto3
-import sagemaker
+from botocore.exceptions import ClientError
 from sagemaker.sklearn.estimator import SKLearn
 
 from src.dataset import dump_dataset
@@ -13,6 +13,7 @@ from src.settings import DATASET_DUMP_PATH
 from src.settings import DATASET_PICKLE_NAME
 
 
+SAGEMAKER_CLIENT = boto3.client('sagemaker')
 BUCKET_NAME = 'sagemaker-learning-bucket-5678'
 
 
@@ -43,7 +44,7 @@ def setup(auto_delete=False):
     )
     bucket.Object(bucket_path).upload_file(DATASET_DUMP_PATH)
 
-    role = sagemaker.get_execution_role()
+    role = 'arn:aws:iam::768763439634:role/service-role/AmazonSageMaker-ExecutionRole-20220712T180426'
 
     train_instance_type = 'ml.m5.large'
 
@@ -61,16 +62,53 @@ def setup(auto_delete=False):
 
     estimator = SKLearn(**estimator_parameters)
 
+    # Trains the model in a Sagemaker Training Job
     estimator.fit({
         'train': pickle_train_s3_uri
     })
 
-    sklearn_predictor = estimator.deploy(
-        initial_instance_count=1,
-        instance_type='ml.m5.large',
-        endpoint_name='music-recommender-endpoint'
-    )
+    model = estimator.create_model()
+    endpoint_name = 'music-recommender-endpoint'
 
-    if auto_delete:
-        # Use this to undeploy the endpoint:
-        sklearn_predictor.delete_endpoint(True)
+    # Deploy the changes for the endpoint.
+    session = model.sagemaker_session
+    container_def = model.prepare_container_def(
+        instance_type='ml.m5.large'
+    )
+    session.create_model(model.name, role, container_def)
+    endpoint_config_name = session.create_endpoint_config(
+        name=model.name,
+        model_name=model.name,
+        initial_instance_count=1,
+        instance_type='ml.m5.large'
+    )
+    try:
+        SAGEMAKER_CLIENT.update_endpoint(
+            EndpointName=endpoint_name,
+            EndpointConfigName=endpoint_config_name
+        )
+    except ClientError:
+        SAGEMAKER_CLIENT.create_endpoint(
+            EndpointName=endpoint_name,
+            EndpointConfigName=endpoint_config_name
+        )
+
+    # cleanup old models and endpoint configs
+    
+
+    # try:
+    #     sklearn_predictor = estimator.deploy(
+    #         initial_instance_count=1,
+    #         instance_type='ml.m5.large',
+    #         endpoint_name='music-recommender-endpoint',
+    #     )
+    # except ClientError:
+    #     sklearn_predictor = estimator.deploy(
+    #         initial_instance_count=1,
+    #         instance_type='ml.m5.large',
+    #         endpoint_name='music-recommender-endpoint',
+    #     )
+
+    # if auto_delete:
+    #     # Use this to undeploy the endpoint:
+    #     sklearn_predictor.delete_endpoint(True)
